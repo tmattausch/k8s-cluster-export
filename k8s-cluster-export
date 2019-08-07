@@ -1,0 +1,346 @@
+#!/bin/bash
+#
+# k8s-cluster-export
+# purpose:   move kubernetes resources to an other cluster
+#            (and if requested to an other namespace)
+# author		 Thomas Mattausch (thomas@mattausch.org)
+#
+
+available_resources=(
+  pvc
+  sts
+  deploy
+  svc
+  cm
+  ing
+  secrets
+)
+
+display_help() {
+echo "
+USAGE: k8s-export.sh -n namespace [-h] [-r resource-1] [-r resource-2] [-c new-namespace] [-i inputfile (e.g. deploy)] [-i pvc]
+
+description     This script will export kubernetes resource configs the exported resources can be 
+                limited with -r to a specefic resource type (e.g. -r pvc -r sv).
+
+                And can be limted with -i to an subset of resources in that namespace.
+
+                parameter:
+                -n:   target-namespace
+                -r:   limit resources to specified types (can be repeated multiple times) 
+                -i:   limit exported resources to input file (new line serparted)
+                      the input file must match the name of the resource (can be repeated multiple times)
+                -c:   change namespace to specified value
+
+                By not setting -r all resources will be exported.
+
+Supported Resources:
+"
+printf '%s\n' "${available_resources[@]}"
+}
+
+while getopts ':n:r:i:c:h' opt; do
+    case "$opt" in
+        r) manual_resource+=("$OPTARG") ;;
+        n) NAMESPACE=$OPTARG;;
+        c) NEW_NAMESPACE=$OPTARG;;
+        i) target_files+=("$OPTARG");;
+        h) display_help
+           exit 0 ;;
+        *) echo 'error in command line parsing' >&2
+           exit 1
+           ;;
+        :) echo "Option $OPTARG requires an argument." >&2
+           exit 1
+           ;;
+    esac
+done
+
+
+function main {
+  set_env
+  check_prerequisites
+
+  # check if limit resources parameter is set
+  # otherwise export all available resources
+  if [ -n "$manual_resource" ]; then
+    check_manual_resource
+    export_config "${manual_resource[@]}"
+    exit 0
+  else
+    export_config "${available_resources[@]}"
+    exit 0
+  fi
+}
+
+function export_config {
+  export_resources=("$@")
+  echo -e "\n${BLUE}⎈ ⎈ ☃ ⎈ ⎈\n${NC}"
+  status_output "start export resources for ns $NAMESPACE" "step"
+
+  mkdir -p $SOURCE/$NAMESPACE
+
+  for r in "${export_resources[@]}"; do
+    $r
+  done
+}
+
+function set_env {
+  pv_target=()
+  SOURCE="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
+  BLUE='\033[1;34m'
+  GREEN='\033[1;32m'
+  RED='\033[0;31m'
+  YELLOW='\033[1;33m'
+  NC='\033[0m' # No Color
+  BOLD=$(tput bold)
+  NORMAL=$(tput sgr0)
+}
+
+function status_output {
+  echo -e ""
+  if [ $2 == "ok" ]; then
+    echo -e "${BLUE}-------------- $1 --------------${NC}"
+  elif [ $2 == "warn" ]; then
+    echo -e "${YELLOW}-------------- $1 --------------${NC}"
+  elif [ $2 == "error" ]; then
+     echo -e "${RED}ERROR: $1${NC}"
+  elif [ $2 == "step" ]; then
+    echo -e "${BOLD}---- $1 ----${NORMAL}"
+  else
+     echo -e "${RED}ERROR in status_output$1${NC}"
+     exit 1
+  fi
+  echo -e ""
+}
+
+function check_prerequisites {
+  #check kubectl installation
+  if [ ! -x "$(command -v kubectl)" ] ; then
+    status_output "kubectl is not instaled" "error"
+    exit 1
+  fi
+
+  #check if namespace parameter is set
+  if [ -z "$NAMESPACE" ]; then
+    status_output "namespace not set (-n)" "error"
+    display_help
+    exit 1
+  fi
+
+  #check if namespace exists
+  if kubectl get ns $NAMESPACE; then
+    :
+  else
+    status_output "namespace not valid ($NAMESPACE)" "error"
+    exit 1
+  fi
+
+  if [ ! -x "$(command -v yq)" ] ; then
+    status_output "yq is not instaled. Please install" "error"
+    exit 1
+  fi
+}
+
+function check_manual_resource {
+  #check if the resource is available
+  for r in ${manual_resource[@]}; do
+    if [[ " ${available_resources[@]} " =~ " $r " ]]; then
+      :
+    else
+      status_output "resource type $r not configured" "error"
+      status_output "supported functions:" "step"
+      printf '%s\n' "${available_resources[@]}"
+      exit 1
+    fi
+  done
+}
+
+function show_diff {
+  status_output "changes" "warn"
+  if [ ! -x "$(command -v colordiff)" ] ; then
+    diff -y $RAW $RESULT
+  else
+    colordiff -y --suppress-common-lines $RAW $RESULT
+  fi
+}
+
+function remove_yaml_value {
+  arr=("$@")
+  for i in "${arr[@]}"; do
+    yq d -i $RESULT $i
+  done
+}
+
+function change_namespace {
+  if [ -n "$NEW_NAMESPACE" ]; then
+    if [ $TYPE == "pv" ]; then
+      yq w -i $RESULT spec.claimRef.namespace $NEW_NAMESPACE
+    else
+      yq w -i $RESULT metadata.namespace $NEW_NAMESPACE
+    fi
+  fi
+}
+
+function set_targets {
+  if [ "$1" = "pv" ]; then
+    # only export PVs for correspoinding PVCs
+    targets=("${pv_targets[@]}")
+  elif [[ " ${target_files[@]} " =~ "$1" ]]; then
+    targets=()
+    while IFS= read -r line; do
+      targets+=("$line")
+    done <$1
+  else
+    targets=($(kubectl get $1 -n ${NAMESPACE} --no-headers | awk '{print $1}'))
+  fi
+}
+
+
+function remove_status {
+  # reset status
+  if [ $TYPE == "pvc" ] || [ $TYPE == "deploy" ]; then
+    yq d -i $RESULT status ; echo 'status: {}' >> $RESULT
+  elif [ $TYPE == "sts" ]; then
+    yq d -i $RESULT status ; echo -e 'status:\n  replicas: 0' >> $RESULT
+  elif [ $TYPE == "svc" ] || [ $TYPE == "ing" ]; then
+    yq d -i $RESULT status ; echo -e 'status:\n  loadBalancer: {}' >> $RESULT
+  fi
+}
+
+function export_resource {
+  status_output "export $1" "ok"
+  TYPE="$1"
+  mkdir -p $SOURCE/$NAMESPACE/$2_$1
+  TARGET_FOLDER="$SOURCE/$NAMESPACE/$2_$1"
+  set_targets "$TYPE"
+
+  for i in "${targets[@]}"; do
+    RAW=$TARGET_FOLDER'/'$TYPE'_'$i'_raw.yaml'
+    RESULT=$TARGET_FOLDER'/'$TYPE'_'$i'.yaml'
+    status_output "export $i config" "step"
+    # skip default token secret in export
+    if [ $i != default-token-86222 ] && [ ${TYPE} != "secrets" ]; then
+      # export resource and adjust the output
+      kubectl get $TYPE $i -o yaml -n ${NAMESPACE} > $RAW
+      cp $RAW $RESULT
+      remove_yaml_value "${remove[@]}"
+      # only export PVs for correspoinding PVCs
+      if [ "$1" = "pvc" ]; then
+        pv_targets+=($(yq r $RESULT spec.volumeName))
+      # change generation to 1 for sts
+      elif [ "$1" = "sts" ]; then
+        yq w -i $RESULT metadata.generation 1
+      fi
+      change_namespace
+      remove_status
+      show_diff
+      rm -f $RAW
+    else
+      status_output "skip secret: $i" "step"
+    fi
+  done
+}
+
+
+function pvc {
+  # get persistent volume claims
+  remove=(
+  "metadata.annotations.\"pv.kubernetes.io/bound-by-controller\""
+  "metadata.annotations.\"pv.kubernetes.io/bind-completed\""
+  "metadata.creationTimestamp"
+  "metadata.annotations.\"kubectl.kubernetes.io/last-applied-configuration\""
+  "metadata.selfLink"
+  "metadata.uid"
+  "metadata.resourceVersion"
+  )
+  export_resource "pvc" "1" "${remove[@]}"
+
+  # get corresponding persistent volumes
+  remove=(
+  "metadata.annotations.\"kubernetes.io/createdby\""
+  "metadata.annotations.\"pv.kubernetes.io/bound-by-controller\""
+  "metadata.creationTimestamp"
+  "metadata.annotations.\"kubectl.kubernetes.io/last-applied-configuration\""
+  "metadata.selfLink"
+  "metadata.resourceVersion"
+  "metadata.uid"
+  "spec.claimRef.uid"
+  "spec.claimRef.resourceVersion"
+  "status"
+  )
+  export_resource "pv" "2" "${remove[@]}"
+}
+
+function cm {
+  #get configmaps
+  remove=(
+    "metadata.creationTimestamp"
+    "metadata.selfLink"
+    "metadata.resourceVersion"
+    "metadata.uid"
+  )
+  export_resource "cm" "3" "${remove[@]}"
+}
+ 
+function secrets {
+  remove=(
+    "metadata.creationTimestamp"
+    "metadata.selfLink"
+    "metadata.resourceVersion"
+    "metadata.uid"
+  )
+  export_resource "secrets" "4" "${remove[@]}"
+}
+
+function deploy {
+  #get deployments
+  remove=(
+    "metadata.annotations.\"kubectl.kubernetes.io/last-applied-configuration\""
+    "metadata.creationTimestamp"
+    "metadata.selfLink"
+    "metadata.resourceVersion"
+    "metadata.uid"
+  )
+  export_resource "deploy" "5" "${remove[@]}"
+}
+
+function sts {
+  #get statefulsets 
+  remove=(
+  "metadata.annotations.\"kubectl.kubernetes.io/last-applied-configuration\""
+  "metadata.creationTimestamp"
+  "metadata.selfLink"
+  "metadata.resourceVersion"
+  "metadata.uid"
+  )
+  export_resource "sts" "6" "${remove[@]}"
+}
+
+function svc {
+  #get services
+  remove=(
+  "metadata.annotations.\"kubectl.kubernetes.io/last-applied-configuration\""
+  "metadata.creationTimestamp"
+  "metadata.selfLink"
+  "metadata.resourceVersion"
+  "metadata.uid"
+  "spec.clusterIP"
+  "spec.ports.*.nodePort"
+  )
+  export_resource "svc" "7" "${remove[@]}"
+}
+
+function ing {
+  #get ingress
+  remove=(
+  "metadata.annotations.\"kubectl.kubernetes.io/last-applied-configuration\""
+  "metadata.creationTimestamp"
+  "metadata.selfLink"
+  "metadata.resourceVersion"
+  "metadata.uid"
+  )
+  export_resource "ing" "8" "${remove[@]}"
+}
+
+main
