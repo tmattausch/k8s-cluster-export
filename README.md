@@ -145,7 +145,7 @@ for i in */2_pv/*; do
 done
 ```
 
-#### 5. Delete PVCs in old namespace
+##### 4. Delete PVCs in old namespace
 
 ```bash
 for i in */1_pvc/*; do
@@ -154,7 +154,7 @@ for i in */1_pvc/*; do
 done
 ```
 
-### 6. Remove claimRef from PVs
+##### 5. Remove claimRef from PVs
 
 Check if the PVs are all in state **Released** and remove the claimRef from the PV
 
@@ -170,7 +170,7 @@ for i in */2_pv/*; do
 done
 ```
 
-### 7. import config in new namespace
+##### 6. import config in new namespace
 
 Don't reimporte the PVs because they are still there
 
