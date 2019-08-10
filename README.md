@@ -74,11 +74,18 @@ done
 
 for i in */6_sts/*; do
   sts=$(yq r $i metadata.name)
-  kubectl scale statefulset --replicas 0 $deploy
+  kubectl scale statefulset --replicas 0 $sts
 done
 ```
+##### 3. check if all volumes are available
+for i in */2_pv/*; do
+  vol=$(yq r $i spec.awsElasticBlockStore.volumeID | cut -f4 -d'/')
+  echo $vol
+  aws ec2 describe-volumes --volume-id $vol | jq -r ".Volumes[].State"
+done
 
-##### 3. set tags for EBS volumes
+
+##### 4. set tags for EBS volumes
 ```bash
 OLD_CLUSTER=old-cluster-123
 NEW_CLUSTER=new-cluster-123
@@ -91,15 +98,20 @@ for i in */2_pv/*; do
 done
 ```
 
-##### 4. crate snapshot from ebs volume
+##### 5. crate snapshot from ebs volume and check status
 ```bash
 for i in */2_pv/*; do
   vol=$(yq r $i spec.awsElasticBlockStore.volumeID | cut -f4 -d'/')
-  aws ec2 create-snapshot --volume-id $vol --description before-migration
+  aws ec2 create-snapshot --volume-id $vol --description before-migration >> snap-output
+done
+
+for i in $(cat snap-output | jq -r ".SnapshotId"); do
+  echo $i
+  aws ec2 describe-snapshots --snapshot-ids $i | jq -r ".Snapshots[].State"
 done
 ```
 
-##### 5. import config in new cluster
+##### 6. import config in new cluster
 Take care to import PVCs first followed by PVs.
 ```bash
 kubectl apply -f default/1_pvc/.
@@ -114,4 +126,56 @@ check the pvc status and deploy all other resources after that.
 kubectl apply -f default/3_cm/.
 ...
 kubectl apply -f default/8_ing/.
+```
+---
+### Namespace to Namespace pvc migration
+
+##### 1. export configs
+```bash
+./k8s-cluster-export -n old-ns -c new-ns
+```
+##### 2. Scale down and create snapshots
+See cluster migration
+
+##### 3. Set PV ReclaimPolicy to Retain
+```bash
+for i in */2_pv/*; do
+  pv=$(yq r $i metadata.name)
+  kubectl patch pv $pv -p '{"spec":{"persistentVolumeReclaimPolicy":"Retain"}}'
+done
+```
+
+#### 5. Delete PVCs in old namespace
+
+```bash
+for i in */1_pvc/*; do
+  pvc=$(yq r $i metadata.name)
+  kubectl delete pvc -n old-ns $pvc
+done
+```
+
+### 6. Remove claimRef from PVs
+
+Check if the PVs are all in state **Released** and remove the claimRef from the PV
+
+```bash
+for i in */2_pv/*; do
+  pv=$(yq r $i metadata.name)
+  k get pv $pv
+done
+
+for i in */2_pv/*; do
+  pv=$(yq r $i metadata.name)
+  kubectl patch pv $pv --type=json -p='[{"op": "remove", "path": "/spec/claimRef"}]'
+done
+```
+
+### 7. import config in new namespace
+
+Don't reimporte the PVs because they are still there
+
+```bash
+kubectl apply -f old-ns/1_pvc/.
+kubectl apply -f old-ns/5_deploy/.
+...
 ```
