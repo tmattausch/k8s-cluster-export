@@ -233,7 +233,7 @@ function export_resource {
     RESULT=$TARGET_FOLDER'/'$TYPE'_'$i'.yaml'
     status_output "export $i config" "step"
     # skip default token secret in export
-    if [ $i = default-token-86222 ] && [ ${TYPE} = "secrets" ]; then
+    if [[ $i =~ ^default-token-[0-9a-z]{5} ]] && [ ${TYPE} = "secrets" ]; then
       status_output "skip secret: $i" "step"
     elif [ -z "$i" ] || [ $i == "null" ]; then
       status_output "no value set skip export for $TYPE $i" "warn"
