@@ -8,10 +8,13 @@
 
 set -e
 set -o errtrace
+#set -x
 
 function errtrap {
+   echo $?
    RED='\033[0;31m'
    echo -e "\n\n\n${RED} ---- ERROR: unexpected termination! ----\n"
+   exit 1
 }
 
 trap errtrap ERR
@@ -169,9 +172,9 @@ function check_manual_resource {
 function show_diff {
   status_output "changes" "warn"
   if [ ! -x "$(command -v colordiff)" ] ; then
-    diff -y $RAW $RESULT
+    diff -y $RAW $RESULT || true
   else
-    colordiff -y --suppress-common-lines $RAW $RESULT
+    colordiff -y --suppress-common-lines $RAW $RESULT || true
   fi
 }
 
@@ -230,7 +233,11 @@ function export_resource {
     RESULT=$TARGET_FOLDER'/'$TYPE'_'$i'.yaml'
     status_output "export $i config" "step"
     # skip default token secret in export
-    if [ $i != default-token-86222 ] && [ ${TYPE} != "secrets" ]; then
+    if [ $i = default-token-86222 ] && [ ${TYPE} = "secrets" ]; then
+      status_output "skip secret: $i" "step"
+    elif [ -z "$i" ] || [ $i == "null" ]; then
+      status_output "no value set skip export for $TYPE $i" "warn"
+    else
       # export resource and adjust the output
       kubectl get $TYPE $i -o yaml -n ${NAMESPACE} > $RAW
       cp $RAW $RESULT
@@ -246,8 +253,6 @@ function export_resource {
       remove_status
       show_diff
       rm -f $RAW
-    else
-      status_output "skip secret: $i" "step"
     fi
   done
 }
