@@ -6,6 +6,16 @@
 # author		 Thomas Mattausch (thomas@mattausch.org)
 #
 
+set -e
+set -o errtrace
+
+function errtrap {
+   RED='\033[0;31m'
+   echo -e "\n\n\n${RED} ---- ERROR: unexpected termination! ----\n"
+}
+
+trap errtrap ERR
+
 available_resources=(
   pvc
   sts
