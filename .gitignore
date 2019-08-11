@@ -1,1 +1,8 @@
 *.yaml
+pvc
+sts
+deploy
+svc
+cm
+ing
+secrets
