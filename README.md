@@ -8,7 +8,7 @@ Since on one hand the --export kubectl parameter is [depreciated](https://github
 
 Right now not all resources types are implemented.
 
-#####Namespaced Resources
+##### Namespaced Resources
 ```
 available_resources=(
   pvc
@@ -26,7 +26,7 @@ available_resources=(
 )
 ```
 
-#####Cluster Resources
+##### Cluster Resources
 ```
 available_cluster_resources=(
   sc
