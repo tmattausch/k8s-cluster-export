@@ -1,13 +1,17 @@
 #!/bin/bash
-#
+# 
 # k8s-cluster-export
+# Modified:  2019-10-20
 # purpose:   move kubernetes resources to an other cluster
-#            (and if requested to an other namespace)
-# author		 Thomas Mattausch (thomas@mattausch.org)
+#            (and if requested import to an other namespace)
+# 
+# Modified by Michael Zervakis m.zervakis@infinitum.gr
 #
+# forked from https://github.com/tmattausch/k8s-cluster-export
+# author:    Thomas Mattausch (thomas@mattausch.org) 
 
 set -e
-set -o errtrace
+set -o errtrace     # Inherit ERR trap from shell functions
 #set -x
 
 function errtrap {
@@ -27,6 +31,22 @@ available_resources=(
   cm
   ing
   secrets
+  limits
+  quota
+  roles         # rbac.authorization.k8s.io
+  rolebindings  # rbac.authorization.k8s.io
+  job
+  # ds
+  # cj
+  # netpol
+)
+
+available_cluster_resources=(
+  sc        # storage.k8s.io  StorageClass
+  pv        # storage.k8s.io  Persistent Volumes
+  psp       # policy          PodSecurityPolicy
+  clusterroles          # rbac.authorization.k8s.io
+  clusterrolebindings   # rbac.authorization.k8s.io
 )
 
 display_help() {
@@ -36,28 +56,45 @@ USAGE: k8s-export.sh -n namespace [-h] [-r resource-1] [-r resource-2] [-c new-n
 description     This script will export kubernetes resource configs the exported resources can be 
                 limited with -r to a specefic resource type (e.g. -r pvc -r sv).
 
-                And can be limted with -i to an subset of resources in that namespace.
+                And can be limited with -i to a subset of resources in that namespace.
 
                 parameter:
-                -n:   target-namespace
+                -n:   set source to namespace
+                -g:   set source to cluster 
                 -r:   limit resources to specified types (can be repeated multiple times) 
                 -i:   limit exported resources to input file (new line serparted)
                       the input file must match the name of the resource (can be repeated multiple times)
                 -c:   change namespace to specified value
-
                 By not setting -r all resources will be exported.
 
-Supported Resources:
+Supported Namespaced Resources:
 "
 printf '%s\n' "${available_resources[@]}"
+echo "
+Supported Cluster Resources:
+"
+printf '%s\n' "${available_cluster_resources[@]}"
 }
 
-while getopts ':n:r:i:c:h' opt; do
+while getopts ':n:r:i:c:gh' opt; do
     case "$opt" in
         r) manual_resource+=("$OPTARG") ;;
-        n) NAMESPACE=$OPTARG;;
+        n) if [ -n "$CLUSTER" ]; then
+             echo 'Option -g cannot be used with option -n' >&2
+             exit 1
+           else
+             NAMESPACE=$OPTARG
+           fi
+           ;;
         c) NEW_NAMESPACE=$OPTARG;;
         i) target_files+=("$OPTARG");;
+        g) if [ -n "$NAMESPACE" ]; then
+             echo 'Option -g cannot be used with option -n' >&2
+             exit 1
+           else
+             CLUSTER=1
+           fi             
+           ;;
         h) display_help
            exit 0 ;;
         *) echo 'error in command line parsing' >&2
@@ -69,6 +106,13 @@ while getopts ':n:r:i:c:h' opt; do
     esac
 done
 
+objectmeta_v1=(
+  "metadata.annotations.\"kubectl.kubernetes.io/last-applied-configuration\""
+  "metadata.creationTimestamp"
+  "metadata.selfLink"
+  "metadata.resourceVersion"
+  "metadata.uid"
+)
 
 function main {
   set_env
@@ -79,6 +123,9 @@ function main {
   if [ -n "$manual_resource" ]; then
     check_manual_resource
     export_config "${manual_resource[@]}"
+    exit 0
+  elif [ -n "$CLUSTER" ]; then
+    export_config "${available_cluster_resources[@]}"
     exit 0
   else
     export_config "${available_resources[@]}"
@@ -91,8 +138,12 @@ function export_config {
   echo -e "\n${BLUE}⎈ ⎈ ☃ ⎈ ⎈\n${NC}"
   status_output "start export resources for ns $NAMESPACE" "step"
 
-  mkdir -p $SOURCE/$NAMESPACE
-
+  if [ -n "$NAMESPACE" ]; then
+    mkdir -p $SOURCE/$NAMESPACE
+  else
+    mkdir -p $SOURCE/cluster
+  fi
+  
   for r in "${export_resources[@]}"; do
     $r
   done
@@ -135,7 +186,7 @@ function check_prerequisites {
   fi
 
   #check if namespace parameter is set
-  if [ -z "$NAMESPACE" ]; then
+  if [ -z "$NAMESPACE" ] && [ -z "$CLUSTER" ]; then
     status_output "namespace not set (-n)" "error"
     display_help
     exit 1
@@ -157,16 +208,22 @@ function check_prerequisites {
 
 function check_manual_resource {
   #check if the resource is available
+  if [ $CLUSTER -eq 1 ]; then
+    check_resources=(${available_cluster_resources[@]})
+  else
+    check_resources=(${available_resources[@]})
+  fi
   for r in ${manual_resource[@]}; do
-    if [[ " ${available_resources[@]} " =~ " $r " ]]; then
+    if [[ " ${check_resources[@]} " =~ " $r " ]]; then
       :
     else
       status_output "resource type $r not configured" "error"
       status_output "supported functions:" "step"
-      printf '%s\n' "${available_resources[@]}"
+      printf '%s\n' "${check_resources[@]}"
       exit 1
     fi
   done
+  unset check_resources
 }
 
 function show_diff {
@@ -196,7 +253,7 @@ function change_namespace {
 }
 
 function set_targets {
-  if [ "$1" = "pv" ]; then
+  if [ "$1" = "pv" ] && [ -n "$NAMESPACE" ]; then
     # only export PVs for correspoinding PVCs
     targets=("${pv_targets[@]}")
   elif [[ " ${target_files[@]} " =~ "$1" ]]; then
@@ -204,15 +261,17 @@ function set_targets {
     while IFS= read -r line; do
       targets+=("$line")
     done <$1
+  elif [ -n "$NAMESPACE" ]; then
+    targets=($(kubectl get $1 -n ${NAMESPACE} --no-headers -o=custom-columns=NAME:.metadata.name ))
   else
-    targets=($(kubectl get $1 -n ${NAMESPACE} --no-headers | awk '{print $1}'))
+    targets=($(kubectl get $1 --no-headers -o=custom-columns=NAME:.metadata.name ))
   fi
 }
 
 
 function remove_status {
   # reset status
-  if [ $TYPE == "pvc" ] || [ $TYPE == "deploy" ]; then
+  if [[ " (pvc deploy quota limits job) " =~ " $TYPE " ]]; then
     yq d -i $RESULT status ; echo 'status: {}' >> $RESULT
   elif [ $TYPE == "sts" ]; then
     yq d -i $RESULT status ; echo -e 'status:\n  replicas: 0' >> $RESULT
@@ -224,9 +283,16 @@ function remove_status {
 function export_resource {
   status_output "export $1" "ok"
   TYPE="$1"
-  mkdir -p $SOURCE/$NAMESPACE/$2_$1
-  TARGET_FOLDER="$SOURCE/$NAMESPACE/$2_$1"
   set_targets "$TYPE"
+  
+  if [ -n "$NAMESPACE" ]; then
+    kubectl_namespace="-n ${NAMESPACE}"
+    mkdir -p $SOURCE/$NAMESPACE/$2_$1
+    TARGET_FOLDER="$SOURCE/$NAMESPACE/$2_$1"
+  else
+    mkdir -p $SOURCE/cluster/$2_$1
+    TARGET_FOLDER="$SOURCE/cluster/$2_$1"
+  fi
 
   for i in "${targets[@]}"; do
     RAW=$TARGET_FOLDER'/'$TYPE'_'$i'_raw.yaml'
@@ -239,7 +305,7 @@ function export_resource {
       status_output "no value set skip export for $TYPE $i" "warn"
     else
       # export resource and adjust the output
-      kubectl get $TYPE $i -o yaml -n ${NAMESPACE} > $RAW
+      kubectl get $TYPE $i -o yaml ${kubectl_namespace} > $RAW
       cp $RAW $RESULT
       remove_yaml_value "${remove[@]}"
       # only export PVs for correspoinding PVCs
@@ -257,105 +323,156 @@ function export_resource {
   done
 }
 
-
 function pvc {
   # get persistent volume claims
   remove=(
-  "metadata.annotations.\"pv.kubernetes.io/bound-by-controller\""
-  "metadata.annotations.\"pv.kubernetes.io/bind-completed\""
-  "metadata.creationTimestamp"
-  "metadata.annotations.\"kubectl.kubernetes.io/last-applied-configuration\""
-  "metadata.selfLink"
-  "metadata.uid"
-  "metadata.resourceVersion"
+    "metadata.annotations.\"pv.kubernetes.io/bound-by-controller\""
+    "metadata.annotations.\"pv.kubernetes.io/bind-completed\""
+    ${objectmeta_v1[@]}
   )
-  export_resource "pvc" "1" "${remove[@]}"
+  export_resource "pvc" "01" "${remove[@]}"
 
   # get corresponding persistent volumes
   remove=(
-  "metadata.annotations.\"kubernetes.io/createdby\""
-  "metadata.annotations.\"pv.kubernetes.io/bound-by-controller\""
-  "metadata.creationTimestamp"
-  "metadata.annotations.\"kubectl.kubernetes.io/last-applied-configuration\""
-  "metadata.selfLink"
-  "metadata.resourceVersion"
-  "metadata.uid"
-  "spec.claimRef.uid"
-  "spec.claimRef.resourceVersion"
-  "status"
+    "metadata.annotations.\"kubernetes.io/createdby\""
+    "metadata.annotations.\"pv.kubernetes.io/bound-by-controller\""
+    ${objectmeta_v1[@]}
+    "spec.claimRef.uid"
+    "spec.claimRef.resourceVersion"
   )
-  export_resource "pv" "2" "${remove[@]}"
+  export_resource "pv" "02" "${remove[@]}"
 }
 
 function cm {
   #get configmaps
   remove=(
-    "metadata.creationTimestamp"
-    "metadata.selfLink"
-    "metadata.resourceVersion"
-    "metadata.uid"
+    ${objectmeta_v1[@]}
   )
-  export_resource "cm" "3" "${remove[@]}"
+  export_resource "cm" "03" "${remove[@]}"
 }
  
 function secrets {
   remove=(
-    "metadata.creationTimestamp"
-    "metadata.selfLink"
-    "metadata.resourceVersion"
-    "metadata.uid"
+    ${objectmeta_v1[@]}
   )
-  export_resource "secrets" "4" "${remove[@]}"
+  export_resource "secrets" "04" "${remove[@]}"
 }
 
 function deploy {
   #get deployments
   remove=(
-    "metadata.annotations.\"kubectl.kubernetes.io/last-applied-configuration\""
-    "metadata.creationTimestamp"
-    "metadata.selfLink"
-    "metadata.resourceVersion"
-    "metadata.uid"
+    ${objectmeta_v1[@]}
   )
-  export_resource "deploy" "5" "${remove[@]}"
+  export_resource "deploy" "05" "${remove[@]}"
 }
 
 function sts {
   #get statefulsets 
   remove=(
-  "metadata.annotations.\"kubectl.kubernetes.io/last-applied-configuration\""
-  "metadata.creationTimestamp"
-  "metadata.selfLink"
-  "metadata.resourceVersion"
-  "metadata.uid"
+    ${objectmeta_v1[@]}
   )
-  export_resource "sts" "6" "${remove[@]}"
+  export_resource "sts" "06" "${remove[@]}"
 }
 
 function svc {
   #get services
   remove=(
-  "metadata.annotations.\"kubectl.kubernetes.io/last-applied-configuration\""
-  "metadata.creationTimestamp"
-  "metadata.selfLink"
-  "metadata.resourceVersion"
-  "metadata.uid"
-  "spec.clusterIP"
-  "spec.ports.*.nodePort"
+    ${objectmeta_v1[@]}
+    "spec.clusterIP"
+    "spec.ports.*.nodePort"
   )
-  export_resource "svc" "7" "${remove[@]}"
+  export_resource "svc" "07" "${remove[@]}"
 }
 
 function ing {
   #get ingress
   remove=(
-  "metadata.annotations.\"kubectl.kubernetes.io/last-applied-configuration\""
-  "metadata.creationTimestamp"
-  "metadata.selfLink"
-  "metadata.resourceVersion"
-  "metadata.uid"
+    ${objectmeta_v1[@]}
   )
-  export_resource "ing" "8" "${remove[@]}"
+  export_resource "ing" "08" "${remove[@]}"
+}
+
+function limits {
+  #get limitrange
+  remove=(
+    ${objectmeta_v1[@]}
+  )
+  export_resource "limits" "09" "${remove[@]}"
+}
+
+function quota {
+  #get resourcequotas
+  remove=(
+    ${objectmeta_v1[@]}
+  )
+  export_resource "quota" "10" "${remove[@]}"
+}
+
+function roles {
+  #get roles
+  remove=(
+    ${objectmeta_v1[@]}
+  )
+  export_resource "roles" "11" "${remove[@]}"
+}
+
+function rolebindings {
+  #get rolebindings
+  remove=(
+    ${objectmeta_v1[@]}
+  )
+  export_resource "rolebindings" "12" "${remove[@]}"
+}
+
+function job {
+  #get jobs
+  remove=(
+    ${objectmeta_v1[@]}
+  )
+  export_resource "job" "13" "${remove[@]}"
+}
+
+function psp {
+  #get podsecuritypolicy
+  remove=(
+    ${objectmeta_v1[@]}
+  )
+  export_resource "psp" "01" "${remove[@]}"
+}
+
+function sc {
+  #get storageclass
+  remove=(
+    ${objectmeta_v1[@]}
+  )
+  export_resource "sc" "02" "${remove[@]}"
+}
+
+function pv {
+  #get persistentvolume
+  remove=(
+    "metadata.annotations.\"kubernetes.io/createdby\""
+    "metadata.annotations.\"pv.kubernetes.io/bound-by-controller\""
+    ${objectmeta_v1[@]}
+    "spec.claimRef"
+  )
+  export_resource "pv" "03" "${remove[@]}"
+}
+
+function clusterroles {
+  #get clusterroles
+  remove=(
+    ${objectmeta_v1[@]}
+  )
+  export_resource "clusterroles" "04" "${remove[@]}"
+}
+
+function clusterrolebindings {
+  #get clusterroles
+  remove=(
+    ${objectmeta_v1[@]}
+  )
+  export_resource "clusterrolebindings" "05" "${remove[@]}"
 }
 
 main
