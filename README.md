@@ -8,6 +8,7 @@ Since on one hand the --export kubectl parameter is [depreciated](https://github
 
 Right now not all resources types are implemented.
 
+#####Namespaced Resources
 ```
 available_resources=(
   pvc
@@ -17,14 +18,34 @@ available_resources=(
   cm
   ing
   secrets
+  limits
+  quota
+  roles
+  rolebindings
+  job
 )
 ```
 
+#####Cluster Resources
+```
+available_cluster_resources=(
+  sc
+  pv
+  psp
+  clusterroles
+  clusterrolebindings
+)
+```
 ## Usage
 
 ##### export all resource types for a namespace
 ```bash
 ./k8s-cluster-export -n test-ns
+```
+
+##### export all cluster resource types
+```bash
+./k8s-cluster-export -g
 ```
 
 ##### export all resources types and change the namespace
