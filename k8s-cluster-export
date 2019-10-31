@@ -1,7 +1,7 @@
 #!/bin/bash
 # 
 # k8s-cluster-export
-# Modified:  2019-10-20
+# Modified:  2019-10-31
 # purpose:   move kubernetes resources to an other cluster
 #            (and if requested import to an other namespace)
 # 
@@ -51,7 +51,7 @@ available_cluster_resources=(
 
 display_help() {
 echo "
-USAGE: k8s-export.sh -n namespace [-h] [-r resource-1] [-r resource-2] [-c new-namespace] [-i inputfile (e.g. deploy)] [-i pvc]
+USAGE: k8s-export.sh {-n namespace [-c new-namespace] | -g} [-h] [-k kubeconfig] [-r resource-1] [-r resource-2] [-i inputfile (e.g. deploy)] [-i pvc]
 
 description     This script will export kubernetes resource configs the exported resources can be 
                 limited with -r to a specefic resource type (e.g. -r pvc -r sv).
@@ -65,6 +65,7 @@ description     This script will export kubernetes resource configs the exported
                 -i:   limit exported resources to input file (new line serparted)
                       the input file must match the name of the resource (can be repeated multiple times)
                 -c:   change namespace to specified value
+                -k:   path to kubectl kubeconfig file
                 By not setting -r all resources will be exported.
 
 Supported Namespaced Resources:
@@ -76,7 +77,7 @@ Supported Cluster Resources:
 printf '%s\n' "${available_cluster_resources[@]}"
 }
 
-while getopts ':n:r:i:c:gh' opt; do
+while getopts ':n:r:i:c:k:gh' opt; do
     case "$opt" in
         r) manual_resource+=("$OPTARG") ;;
         n) if [ -n "$CLUSTER" ]; then
@@ -94,6 +95,13 @@ while getopts ':n:r:i:c:gh' opt; do
            else
              CLUSTER=1
            fi             
+           ;;
+        k) if [ ! -f $OPTARG ]; then
+             echo "Kube Config File $OPTARG not found" >&2
+             exit 1
+           else
+             KUBECONFIG=$OPTARG
+           fi
            ;;
         h) display_help
            exit 0 ;;
@@ -141,7 +149,7 @@ function export_config {
   if [ -n "$NAMESPACE" ]; then
     mkdir -p $SOURCE/$NAMESPACE
   else
-    mkdir -p $SOURCE/cluster
+    mkdir -p $SOURCE/CLUSTER
   fi
   
   for r in "${export_resources[@]}"; do
@@ -180,9 +188,16 @@ function status_output {
 
 function check_prerequisites {
   #check kubectl installation
-  if [ ! -x "$(command -v kubectl)" ] ; then
+  if [ ! -x "$(command -v kubectl)" ]; then
     status_output "kubectl is not instaled" "error"
     exit 1
+  fi
+  
+  ## Set Kubectl Config
+  if [ -n "$KUBECONFIG" ]; then
+     KUBECTL="kubectl --kubeconfig=$KUBECONFIG"
+  else
+     KUBECTL="kubectl"
   fi
 
   #check if namespace parameter is set
@@ -193,7 +208,7 @@ function check_prerequisites {
   fi
 
   #check if namespace exists
-  if kubectl get ns $NAMESPACE; then
+  if ${KUBECTL} get ns $NAMESPACE; then
     :
   else
     status_output "namespace not valid ($NAMESPACE)" "error"
@@ -262,9 +277,9 @@ function set_targets {
       targets+=("$line")
     done <$1
   elif [ -n "$NAMESPACE" ]; then
-    targets=($(kubectl get $1 -n ${NAMESPACE} --no-headers -o=custom-columns=NAME:.metadata.name ))
+    targets=($(${KUBECTL} get $1 -n ${NAMESPACE} --no-headers -o=custom-columns=NAME:.metadata.name ))
   else
-    targets=($(kubectl get $1 --no-headers -o=custom-columns=NAME:.metadata.name ))
+    targets=($(${KUBECTL} get $1 --no-headers -o=custom-columns=NAME:.metadata.name ))
   fi
 }
 
@@ -290,7 +305,7 @@ function export_resource {
     mkdir -p $SOURCE/$NAMESPACE/$2_$1
     TARGET_FOLDER="$SOURCE/$NAMESPACE/$2_$1"
   else
-    mkdir -p $SOURCE/cluster/$2_$1
+    mkdir -p $SOURCE/CLUSTER/$2_$1
     TARGET_FOLDER="$SOURCE/cluster/$2_$1"
   fi
 
@@ -305,7 +320,7 @@ function export_resource {
       status_output "no value set skip export for $TYPE $i" "warn"
     else
       # export resource and adjust the output
-      kubectl get $TYPE $i -o yaml ${kubectl_namespace} > $RAW
+      ${KUBECTL} get $TYPE $i -o yaml ${kubectl_namespace} > $RAW
       cp $RAW $RESULT
       remove_yaml_value "${remove[@]}"
       # only export PVs for correspoinding PVCs
