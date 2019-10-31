@@ -143,7 +143,7 @@ function main {
 
 function export_config {
   export_resources=("$@")
-  echo -e "\n${BLUE}⎈ ⎈ ☃ ⎈ ⎈\n${NC}"
+  [ $TERM != "dumb" ] && echo -e "\n${BLUE}⎈ ⎈ ☃ ⎈ ⎈\n${NC}"
   status_output "start export resources for ns $NAMESPACE" "step"
 
   if [ -n "$NAMESPACE" ]; then
@@ -160,13 +160,15 @@ function export_config {
 function set_env {
   pv_target=()
   SOURCE="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
-  BLUE='\033[1;34m'
-  GREEN='\033[1;32m'
-  RED='\033[0;31m'
-  YELLOW='\033[1;33m'
-  NC='\033[0m' # No Color
-  BOLD=$(tput bold)
-  NORMAL=$(tput sgr0)
+  if [ $TERM != "dumb" ]; then
+    BLUE='\033[1;34m'
+    GREEN='\033[1;32m'
+    RED='\033[0;31m'
+    YELLOW='\033[1;33m'
+    NC='\033[0m' # No Color
+    BOLD=$(tput bold)
+    NORMAL=$(tput sgr0)
+  fi
 }
 
 function status_output {
@@ -176,12 +178,12 @@ function status_output {
   elif [ $2 == "warn" ]; then
     echo -e "${YELLOW}-------------- $1 --------------${NC}"
   elif [ $2 == "error" ]; then
-     echo -e "${RED}ERROR: $1${NC}"
+    echo -e "${RED}ERROR: $1${NC}"
   elif [ $2 == "step" ]; then
     echo -e "${BOLD}---- $1 ----${NORMAL}"
   else
-     echo -e "${RED}ERROR in status_output$1${NC}"
-     exit 1
+    echo -e "${RED}ERROR in status_output$1${NC}"
+    exit 1
   fi
   echo -e ""
 }
@@ -243,10 +245,10 @@ function check_manual_resource {
 
 function show_diff {
   status_output "changes" "warn"
-  if [ ! -x "$(command -v colordiff)" ] ; then
-    diff -y $RAW $RESULT || true
-  else
+  if [ -x "$(command -v colordiff)" ] && [ -n $TERM ]; then
     colordiff -y --suppress-common-lines $RAW $RESULT || true
+  else
+    diff --color=never -y $RAW $RESULT || true
   fi
 }
 
@@ -306,7 +308,7 @@ function export_resource {
     TARGET_FOLDER="$SOURCE/$NAMESPACE/$2_$1"
   else
     mkdir -p $SOURCE/CLUSTER/$2_$1
-    TARGET_FOLDER="$SOURCE/cluster/$2_$1"
+    TARGET_FOLDER="$SOURCE/CLUSTER/$2_$1"
   fi
 
   for i in "${targets[@]}"; do
