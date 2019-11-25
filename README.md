@@ -8,6 +8,7 @@ Since on one hand the --export kubectl parameter is [depreciated](https://github
 
 Right now not all resources types are implemented.
 
+##### Namespaced Resources
 ```
 available_resources=(
   pvc
@@ -17,14 +18,50 @@ available_resources=(
   cm
   ing
   secrets
+  limits
+  quota
+  roles
+  rolebindings
+  job
 )
 ```
 
+##### Cluster Resources
+```
+available_cluster_resources=(
+  sc
+  pv
+  psp
+  clusterroles
+  clusterrolebindings
+)
+```
 ## Usage
+USAGE: k8s-export.sh {-n namespace [-c new-namespace] | -g} [-h] [-k kubeconfig] [-r resource-1] [-r resource-2] [-i inputfile (e.g. deploy)] [-i pvc]
+
+This script will export kubernetes resource configs the exported resources can be limited with -r to a specefic resource type (e.g. -r pvc -r sv). And can be limited with -i to a subset of resources in that namespace.
+Arguments
+-n:   set source to namespace
+-g:   set source to cluster 
+-r:   limit resources to specified types (can be repeated multiple times) 
+-i:   limit exported resources to input file (new line serparted) the input file must match the name of the resource (can be repeated multiple times)
+-c:   change namespace to specified value
+-k:   path to kubectl kubeconfig file
+By not setting -r all resources will be exported.
 
 ##### export all resource types for a namespace
 ```bash
 ./k8s-cluster-export -n test-ns
+```
+
+##### export all resources type for a namespace using custom kubeconfig file
+```bash
+./k8s-cluster-export -n test-ns -k kube.yml
+```
+
+##### export all cluster resource types
+```bash
+./k8s-cluster-export -g
 ```
 
 ##### export all resources types and change the namespace
